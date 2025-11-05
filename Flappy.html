@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+<title>Flappy Tap (Enhanced Graphics)</title>
+<style>
+  html,body {
+    height:100%; margin:0; background:#87CEEB; overflow:hidden;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #game { display:block; margin:0 auto; touch-action: manipulation; background:#87CEEB; }
+  .overlay {
+    position: absolute;
+    left: 0; right: 0; top: 0;
+    text-align: center;
+    pointer-events: none;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+    color: #fff;
+    text-shadow: 0 2px 3px rgba(0,0,0,0.4);
+  }
+  #score { margin:14px 0 0; font-weight:700; font-size: 24px; }
+  #message {
+    margin-top: 26vh; font-size: 18px; pointer-events: auto;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.5);
+  }
+  button.retry {
+    margin-top: 12px; font-size: 16px; padding: 8px 14px;
+    border-radius: 10px; border: none;
+    background: rgba(0,0,0,0.6); color: white; pointer-events: auto;
+  }
+  .canvas-wrap { position:relative; width:100%; height:100%;
+    display:flex; align-items:center; justify-content:center; }
+  * { -webkit-user-select:none; -ms-user-select:none; user-select:none; }
+</style>
+</head>
+<body>
+<div class="canvas-wrap">
+  <canvas id="game" width="480" height="720"></canvas>
+  <div class="overlay" style="top:0;">
+    <div id="score">Score: 0</div>
+  </div>
+  <div class="overlay" style="bottom:0;">
+    <div id="message">
+      Tap anywhere to start and flap<br>
+      <small>Tap / click to flap — works on phones and desktops</small>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const scoreEl = document.getElementById('score');
+  const messageEl = document.getElementById('message');
+
+  // --- Responsive Canvas ---
+  function resizeCanvas() {
+    const aspect = 9/16;
+    const maxWidth = Math.min(window.innerWidth, 600);
+    const width = Math.round(maxWidth);
+    const height = Math.round(width / aspect);
+    canvas.style.width = width + 'px';
+    canvas.style.height = height + 'px';
+
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.round(width * dpr);
+    canvas.height = Math.round(height * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  window.addEventListener('resize', resizeCanvas);
+  resizeCanvas();
+
+  let w, h;
+  function updateWH() { w = canvas.clientWidth; h = canvas.clientHeight; }
+  updateWH();
+  window.addEventListener('resize', updateWH);
+
+  // --- Game Variables ---
+  let bird = { x: 0, y: 0, r: 12, vy: 0, flapTime:0 };
+  let gravity = 0.6;
+  let flapStrength = -12;
+  let pipes = [];
+  let pipeGap = 170;
+  let pipeWidth = 54;
+  let pipeInterval = 1500;
+  let lastPipeTime = 0;
+  let speed = 1.8;
+  let running = false;
+  let gameOver = false;
+  let score = 0;
+  let bestScore = 0;
+  let groundOffset = 0;
+
+  function rescaleConstants() {
+    const baseH = 720;
+    const scale = h / baseH;
+    bird.r = Math.max(8, 12 * scale);
+    gravity = 0.55 * scale + 0.1;
+    flapStrength = -11 * scale - 1;
+    pipeGap = Math.max(120, 170 * scale);
+    pipeWidth = Math.max(36, 54 * scale);
+    speed = Math.max(1.4, 1.8 * scale);
+  }
+  rescaleConstants();
+
+  function reset() {
+    updateWH(); rescaleConstants();
+    bird.x = Math.round(w * 0.28);
+    bird.y = Math.round(h * 0.5);
+    bird.vy = 0;
+    pipes = [];
+    lastPipeTime = performance.now();
+    score = 0; running = false; gameOver = false;
+    groundOffset = 0;
+    scoreEl.textContent = 'Score: 0';
+    messageEl.innerHTML = 'Tap anywhere to start and flap<br><small>Tap / click to flap — works on phones and desktops</small>';
+  }
+
+  function spawnPipe() {
+    const margin = 40;
+    const topMin = margin;
+    const topMax = h - pipeGap - margin;
+    const gapY = Math.floor(Math.random() * (topMax - topMin + 1)) + topMin;
+    pipes.push({ x: w + 20, gapY, passed: false });
+  }
+
+  function flap() {
+    if (gameOver) { reset(); running = true; return; }
+    if (!running) {
+      running = true;
+      messageEl.innerHTML = '';
+      lastPipeTime = performance.now();
+      spawnPipe();
+    }
+    bird.vy = flapStrength;
+    bird.flapTime = performance.now();
+  }
+
+  // --- Input ---
+  function onPointerDown(e){ e.preventDefault(); flap(); }
+  canvas.addEventListener('pointerdown', onPointerDown);
+  canvas.addEventListener('touchstart', e=>{ onPointerDown(e); }, {passive:false});
+  canvas.addEventListener('mousedown', onPointerDown);
+  window.addEventListener('keydown', e=>{
+    if(e.code==='Space'||e.key===' '){ e.preventDefault(); flap(); }
+  });
+
+  // --- Collision ---
+  function rectsOverlap(rx, ry, rw, rh, cx, cy, cr) {
+    const closestX = Math.max(rx, Math.min(cx, rx + rw));
+    const closestY = Math.max(ry, Math.min(cy, ry + rh));
+    const dx = cx - closestX;
+    const dy = cy - closestY;
+    return (dx*dx + dy*dy) < (cr*cr);
+  }
+
+  // --- Draw Helpers ---
+  function drawPipe(x, gapY) {
+    const grdTop = ctx.createLinearGradient(0,0,0,gapY);
+    grdTop.addColorStop(0,"#2e8b57");
+    grdTop.addColorStop(1,"#3cb371");
+    const grdBottom = ctx.createLinearGradient(0,gapY+pipeGap,0,h);
+    grdBottom.addColorStop(0,"#3cb371");
+    grdBottom.addColorStop(1,"#2e8b57");
+
+    // pipe body
+    ctx.fillStyle = grdTop;
+    ctx.fillRect(x, 0, pipeWidth, gapY);
+    ctx.fillStyle = grdBottom;
+    ctx.fillRect(x, gapY + pipeGap, pipeWidth, h - (gapY + pipeGap));
+
+    // pipe border lines
+    ctx.strokeStyle = "#145c33";
+    ctx.lineWidth = 3;
+    ctx.strokeRect(x, 0, pipeWidth, gapY);
+    ctx.strokeRect(x, gapY + pipeGap, pipeWidth, h - (gapY + pipeGap));
+
+    // shiny highlights
+    ctx.fillStyle = "rgba(255,255,255,0.15)";
+    ctx.fillRect(x+4,0,4,gapY);
+    ctx.fillRect(x+4,gapY+pipeGap,4,h - (gapY+pipeGap));
+  }
+
+  function drawBird(b) {
+    const tilt = Math.max(-0.6, Math.min(1.0, b.vy / 12));
+    ctx.save();
+    ctx.translate(b.x, b.y);
+    ctx.rotate(tilt);
+
+    // body gradient
+    const grad = ctx.createLinearGradient(-b.r, -b.r, b.r, b.r);
+    grad.addColorStop(0, "#ffeb99");
+    grad.addColorStop(1, "#f1b700");
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(0, 0, b.r, 0, Math.PI*2);
+    ctx.fill();
+    ctx.strokeStyle = "#b8860b";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // wing animation
+    const flapAngle = Math.sin((performance.now() - b.flapTime)/100) * 0.6;
+    ctx.save();
+    ctx.rotate(flapAngle);
+    ctx.beginPath();
+    ctx.ellipse(-b.r*0.2, b.r*0.1, b.r*0.7, b.r*0.3, -0.4, 0, Math.PI*2);
+    ctx.fillStyle = "#f1a700";
+    ctx.fill();
+    ctx.restore();
+
+    // eye
+    ctx.beginPath();
+    ctx.arc(b.r*0.35, -b.r*0.25, b.r*0.18, 0, Math.PI*2);
+    ctx.fillStyle = "#fff";
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(b.r*0.38, -b.r*0.25, b.r*0.08, 0, Math.PI*2);
+    ctx.fillStyle = "#000";
+    ctx.fill();
+
+    // beak
+    ctx.beginPath();
+    ctx.moveTo(b.r*0.8, 0);
+    ctx.lineTo(b.r*1.3, -b.r*0.15);
+    ctx.lineTo(b.r*0.8, b.r*0.15);
+    ctx.closePath();
+    ctx.fillStyle = "#ff9933";
+    ctx.fill();
+    ctx.strokeStyle = "#cc7a00";
+    ctx.stroke();
+
+    ctx.restore();
+  }
+
+  // --- Main Loop ---
+  let lastTime = performance.now();
+  function loop(now){
+    const dt = now - lastTime; lastTime = now;
+    updateWH(); rescaleConstants();
+
+    // background sky
+    const bg = ctx.createLinearGradient(0,0,0,h);
+    bg.addColorStop(0,"#87CEEB");
+    bg.addColorStop(1,"#b3ecff");
+    ctx.fillStyle = bg;
+    ctx.fillRect(0,0,w,h);
+
+    // update
+    const groundH = Math.round(h*0.12);
+    if(running && !gameOver){
+      bird.vy += gravity;
+      bird.y += bird.vy;
+      groundOffset = (groundOffset + speed*1.5) % 40;
+
+      if(now - lastPipeTime > pipeInterval){
+        spawnPipe();
+        lastPipeTime = now;
+      }
+
+      for(let p of pipes){
+        p.x -= speed;
+        if(!p.passed && p.x + pipeWidth < bird.x - bird.r){
+          p.passed = true;
+          score += 1;
+          scoreEl.textContent = 'Score: ' + score;
+          if(score % 5 === 0){
+            if(pipeGap > 110) pipeGap -= 5;
+            speed += 0.05;
+          }
+        }
+      }
+      pipes = pipes.filter(p => p.x + pipeWidth > -50);
+
+      for(let p of pipes){
+        if(rectsOverlap(p.x,0,pipeWidth,p.gapY,bird.x,bird.y,bird.r) ||
+           rectsOverlap(p.x,p.gapY+pipeGap,pipeWidth,h-(p.gapY+pipeGap)-groundH,bird.x,bird.y,bird.r)){
+          gameOver = true; running = false;
+          messageEl.innerHTML = `Game Over — Score: ${score}<br><button class="retry" onclick="window.__flappyReset()">Retry</button>`;
+          if(score>bestScore) bestScore = score;
+          break;
+        }
+      }
+
+      if(bird.y + bird.r > h - groundH){
+        bird.y = h - groundH - bird.r;
+        gameOver = true; running = false;
+        messageEl.innerHTML = `Game Over — Score: ${score}<br><button class="retry" onclick="window.__flappyReset()">Retry</button>`;
+        if(score>bestScore) bestScore = score;
+      } else if(bird.y - bird.r < 0){
+        bird.y = bird.r; bird.vy = 0;
+      }
+    }
+
+    // draw pipes
+    for(let p of pipes) drawPipe(p.x, p.gapY);
+
+    // draw ground pattern
+    const grd = ctx.createLinearGradient(0,h-groundH,0,h);
+    grd.addColorStop(0,"#6aa84f");
+    grd.addColorStop(1,"#3e8032");
+    ctx.fillStyle = grd;
+    ctx.fillRect(0,h-groundH,w,h);
+    ctx.fillStyle = "rgba(255,255,255,0.08)";
+    for(let i=-1;i<w/40+2;i++){
+      ctx.fillRect(i*40 - groundOffset,h-groundH,20,groundH);
+    }
+
+    // draw bird
+    drawBird(bird);
+
+    if(!running && !gameOver){
+      ctx.fillStyle='rgba(0,0,0,0.15)';
+      ctx.fillRect(w*0.1,h*0.3,w*0.8,h*0.15);
+      ctx.fillStyle='#fff';
+      ctx.font=Math.max(12,Math.round(h*0.03))+'px system-ui';
+      ctx.textAlign='center';
+      ctx.fillText('Tap to start and flap',w/2,h*0.38);
+    }
+
+    requestAnimationFrame(loop);
+  }
+
+  window.__flappyReset = () => reset();
+  reset();
+  lastTime = performance.now();
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
